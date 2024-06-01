@@ -1,0 +1,158 @@
+---
+title: "Model selection on different model to predict MINST Data"
+author: "He Sun"
+date: "2024-05-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+```
+
+## The minst data set and the models that predict it  from the phase: " Selección y ajuste del modelo."
+
+This is the input of the selection procedure is:
+
+1. The true numbers on a calibration set it cannot be the same for training the DL models:
+
+```{r}
+set.seed(17)
+n=1000
+
+obsY=sample(1:10,size = n,rep=TRUE) # This must be the true labales
+
+```
+
+2. Suppose $p=10$ models to predict the true numbers but only 2 are better: the first is the best and the second is the second best.
+
+```{r}
+# mpreds should be the true predictions from the models (maybe different LSTM) here are just invented
+
+p=10
+mpreds=array(NA,dim=c(n,p),dimnames = list(NULL,paste("mod",1:p,sep="")))
+for(j in 1:p){
+  if(j<=2){
+    mpreds[,j]=obsY
+    to.change=sample(1:n,size=n*0.1*j)
+    mpreds[to.change,j]=sample(1:10,size=length(to.change),replace = TRUE)
+  }else{
+    mpreds[,j]=sample(1:10,size = n,rep=TRUE)
+  }
+}
+
+```
+
+## What is the best model ? 
+
+We set a logistic regression for each digit in which we don't know among the p models with predict better the observed digit in Ys. We calculate the posterior inclusion probability of each predictors so we know what is the best model for each digits.
+
+```{r}
+library(BAS)
+
+res=list(NULL)
+for(d in 1:10){
+  trueY=(obsY==d)*1
+  predictions=(mpreds==d)*1
+  dat=data.frame(trueY,predictions)
+  rr=bas.glm(trueY~.,data=dat[1:600,],family = binomial(link = "logit"))
+  res=c(res,list(rr))
+}
+res=res[-1]
+```
+
+For each digits these are the posterior inclusion probabilities of each model for each digits:
+
+```{r}
+posterior.inc.prob=array(NA,dim=c(10,p),dimnames = list(1:10,colnames(mpreds)))
+for(d in 1:10) posterior.inc.prob[d,]=res[[d]]$probne0.MCMC[-1]
+posterior.inc.prob
+heatmap(posterior.inc.prob)
+```
+The posterior inclusion probabilities reported also in the graph suggests that the best models are the first and the second. So the best models are model 1 and model 2 to predict all digits because their inclusion probability in the best model is more than 50% so it is more probable that they are in the best model than they are not.
+
+In fact if we validate these models into an another sample we got this area from the ROC curves. For model 1 these are the areas:
+
+```{r}
+library(verification)
+
+for(d in 1:10){
+  cat("Digit: ",d,"\n")
+  trueY=(obsY==d)*1
+  predictions=(mpreds==d)*1
+  dat=data.frame(trueY,predictions)
+  mpred=glm(trueY~mod1,data=dat[601:1000,],family = binomial(link = "logit"))
+  print(roc.area(obs =  dat$trueY[601:1000],pred = predict(mpred,type="response")))
+}
+
+
+
+
+```
+
+and for model 2:
+
+```{r}
+for(d in 1:10){
+  cat("Digit: ",d,"\n")
+  trueY=(obsY==d)*1
+  predictions=(mpreds==d)*1
+  dat=data.frame(trueY,predictions)
+  mpred=glm(trueY~mod2,data=dat[601:1000,],family = binomial(link = "logit"))
+  print(roc.area(obs =  dat$trueY[601:1000],pred = predict(mpred,type="response")))
+}
+
+```
+
+if we do the same for say model 5 the p-values are not significatives:
+
+```{r}
+for(d in 1:10){
+  cat("Digit: ",d,"\n")
+  trueY=(obsY==d)*1
+  predictions=(mpreds==d)*1
+  dat=data.frame(trueY,predictions)
+  mpred=glm(trueY~mod5,data=dat[601:1000,],family = binomial(link = "logit"))
+  print(roc.area(obs =  dat$trueY[601:1000],pred = predict(mpred,type="response")))
+}
+
+
+```
+
+We know that p-values do not provide how much a model is probable and should not be used to do model selection, although they are useful for model validation which is the purposes of the ROC curves analysis.
+
+## How to use all the models to predict the digit ? The answer if Bayesian Model Averaging
+
+Again this can be done with BAS. We calculate the average predictions using all models and the prediction of each model are weighted according to the posterior model probability. Keep in mind that we can use the model posterior probability of $2^p$ models as the predictions can arrive by different combination of separated model predictions.
+
+```{r}
+for(d in 1:10){
+  cat("Digit: ",d,"\n")
+  trueY=(obsY==d)*1
+  predictions=(mpreds==d)*1
+  dat=data.frame(trueY,predictions)
+  rr=bas.glm(trueY~.,data=dat[601:1000,],family = binomial(link = "logit"))
+  # or estimator="MPM" and predictions are done with respect to the Median Probability Model
+  bma.predictions=fitted(rr,type = "response",estimator = "BMA") 
+  print(roc.area(obs =  dat$trueY[601:1000],pred = bma.predictions))
+}
+```
+
+The above areas AUC are much higher than those derived from a single prediction model. In this case the final model is more complicated and less interpretable but this is the price we have to pay if the goal is predicting, rather than selecting a model. This final BMA model has more validity with respect to a selected model from one DL analysis.
+
+
+## Justification of the Analysis
+
+If we talk about model selection it means that there is uncertainty about the true model and each elaborated model can be just a potential model. In order to be coherent with probability theory which is the one we will guide to the final selection we have to consider a Bayesian approach. We assume here that a priori all models have the same probability and based on the fit of each model in predicting each digit we calculate the model posterior probability. We have a total of $2^p$ models because we consider all combinations of the $p$ DL models. As a summary of the probability distribution on models we consider the overall probability of each DL model in all the $2^p$ models. This probability, called he inclusion probability, is the sum of the probability of each model in which the single DL model appear. With the inclusion probability we can do two things:
+
+1. We can select and justify the selection with the most probable model by considering the DL model with the largest inclusion probability and this concludes the selection of the model.
+2. If the goal is to predict, selecting a model makes almost no sense and better consider many models to predict the response. With model posterior probability we can predict the response by calculating the prediction from each of the $2^p$ models and averaging these predictions according to their posterior model probabilities. This lead to a better prediction.
+
+The Bayesian analysis automatically accomopades for:
+1. model goodness of fit: the more the model fit the data the more is probable among the model with the same complexity;
+2. model complexity: the more complex is the model and the less is probable among the model with the same goodness of fit.
+
+In the end using Bayesian approach we can have the most probabile prediction and we also know how much is probable. We also know that from Hartigan 1966 the Bayesian approach is superior in terms of frequentist performance. In fact we need a less sample size to achieve a model that perform better in the test set than other models which are not based on the Bayesian logic and have the same degree of complexity.
+
+
+
